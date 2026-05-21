@@ -597,3 +597,137 @@ LEFT JOIN Siparisler s ON k.KullaniciID = s.KullaniciID AND s.Durum = 'TeslimEdi
 WHERE k.Rol = 'Musteri' AND k.IsActive = 1
 GROUP BY k.KullaniciID, k.Ad, k.Soyad, k.Email;
 GO
+
+
+-- ============================================================
+-- 6. İLERİ DÜZEY SORGULAR (DQL & Analitik)
+-- ============================================================
+
+-- -----------------------------------------------
+-- SORGU 1: JOIN — En az 3 tablo, sipariş fişi
+-- Bir siparişin tüm detaylarını müşteri, restoran,
+-- ürün ve kurye bilgileriyle birleştiren "sipariş fişi" sorgusu
+-- -----------------------------------------------
+SELECT
+    s.SiparisID,
+    s.OlusturmaTarihi                          AS SiparisTarihi,
+    s.Durum,
+    -- Müşteri
+    k.Ad + ' ' + k.Soyad                      AS MusteriAdi,
+    k.Telefon                                  AS MusteriTelefon,
+    -- Restoran
+    r.RestoranAdi,
+    r.Adres                                    AS RestoranAdres,
+    -- Kurye
+    ISNULL(kry.Ad + ' ' + kry.Soyad, 'Atanmadı') AS KuryeAdi,
+    -- Sipariş kalemi
+    u.UrunAdi,
+    sd.Miktar,
+    sd.BirimFiyat,
+    sd.Miktar * sd.BirimFiyat                 AS KalemToplam,
+    s.ToplamTutar,
+    CASE WHEN s.AskidaYemekMi = 1 THEN 'Evet (Askıda)' ELSE 'Hayır' END AS AskidaMi
+FROM Siparisler s
+INNER JOIN Kullanicilar    k   ON s.KullaniciID = k.KullaniciID
+INNER JOIN Restoranlar     r   ON s.RestoranID  = r.RestoranID
+INNER JOIN SiparisDetaylari sd ON s.SiparisID   = sd.SiparisID
+INNER JOIN MenuUrunleri    u   ON sd.UrunID      = u.UrunID
+LEFT  JOIN Kullanicilar    kry ON s.KuryeID      = kry.KullaniciID
+WHERE s.SiparisID = 81;  -- Örnek: 81 nolu siparişin fişi
+GO
+
+-- -----------------------------------------------
+-- SORGU 2: Agregasyon + GROUP BY + HAVING
+-- Son 1 ayda 5'ten fazla sipariş alan restoranların
+-- ortalama sepet tutarı ve toplam ciro analizi
+-- -----------------------------------------------
+SELECT
+    r.RestoranID,
+    r.RestoranAdi,
+    COUNT(s.SiparisID)        AS SiparisSayisi,
+    SUM(s.ToplamTutar)        AS ToplamCiro,
+    AVG(s.ToplamTutar)        AS OrtalamaSebet,
+    MIN(s.ToplamTutar)        AS MinSebet,
+    MAX(s.ToplamTutar)        AS MaxSebet
+FROM Restoranlar r
+INNER JOIN Siparisler s ON r.RestoranID = s.RestoranID
+WHERE s.Durum = 'TeslimEdildi'
+  AND s.OlusturmaTarihi >= DATEADD(MONTH, -1, GETDATE())
+GROUP BY r.RestoranID, r.RestoranAdi
+HAVING COUNT(s.SiparisID) > 5
+ORDER BY ToplamCiro DESC;
+GO
+
+-- -----------------------------------------------
+-- SORGU 3: Alt Sorgu (Subquery) — NOT EXISTS
+-- Hiç "Askıda Yemek" bağışı yapmamış ama
+-- aktif olarak sipariş veren müşteriler
+-- -----------------------------------------------
+SELECT
+    k.KullaniciID,
+    k.Ad + ' ' + k.Soyad AS MusteriAdi,
+    k.Email,
+    COUNT(s.SiparisID) AS ToplamSiparis
+FROM Kullanicilar k
+INNER JOIN Siparisler s ON k.KullaniciID = s.KullaniciID
+WHERE k.Rol = 'Musteri'
+  AND k.IsActive = 1
+  AND NOT EXISTS (
+      SELECT 1
+      FROM AskidaYemekBagislari b
+      WHERE b.BagisciKullaniciID = k.KullaniciID
+  )
+GROUP BY k.KullaniciID, k.Ad, k.Soyad, k.Email
+HAVING COUNT(s.SiparisID) >= 3
+ORDER BY ToplamSiparis DESC;
+GO
+
+-- -----------------------------------------------
+-- BONUS SORGU 4: EXISTS alt sorgusu
+-- Daha önce "Askıda Yemek" havuzundan yararlanan
+-- ihtiyaç sahiplerinin listesi
+-- -----------------------------------------------
+SELECT
+    k.KullaniciID,
+    k.Ad + ' ' + k.Soyad AS MusteriAdi,
+    k.Email,
+    SUM(kul.KullanilanBakiye) AS ToplamYararlandigiTutar
+FROM Kullanicilar k
+JOIN AskidaYemekKullanim kul ON k.KullaniciID = kul.KullaniciID
+WHERE EXISTS (
+    SELECT 1 FROM AskidaYemekKullanim kul2
+    WHERE kul2.KullaniciID = k.KullaniciID
+)
+GROUP BY k.KullaniciID, k.Ad, k.Soyad, k.Email;
+GO
+
+-- -----------------------------------------------
+-- BONUS SORGU 5: View kullanımı
+-- Havuz durumu ve aktif menü görünümleri
+-- -----------------------------------------------
+
+-- Askıda Yemek havuz durumu
+SELECT * FROM vw_AskidaYemekHavuzDurumu ORDER BY MevcutBakiye DESC;
+GO
+
+-- Belirli restoranın aktif menüsü
+SELECT * FROM vw_AktifRestoranMenuleri WHERE RestoranID = 2 ORDER BY KategoriAdi, Fiyat;
+GO
+
+-- Müşteri sipariş özeti
+SELECT * FROM vw_MusteriSiparisDurumu WHERE ToplamSiparis > 0 ORDER BY ToplamHarcama DESC;
+GO
+
+-- ============================================================
+-- PROJE TAMAMLANDI
+-- Tablo sayısı   : 10
+-- Constraint     : PK, FK, CHECK, UNIQUE, NOT NULL
+-- Soft Delete    : IsActive kolonu (Kullanicilar, Restoranlar,
+--                  Kategoriler, MenuUrunleri)
+-- Index sayısı   : 4 (PK dışı anlamlı)
+-- Trigger sayısı : 3
+-- View sayısı    : 3
+-- Mock Data      : 23 kullanıcı, 7 restoran, 50+ ürün,
+--                  91 sipariş, 10 değerlendirme,
+--                  10 Askıda bağış, 2 Askıda kullanım
+-- ============================================================
